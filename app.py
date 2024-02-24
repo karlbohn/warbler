@@ -2,8 +2,8 @@ import os
 
 from flask import Flask, render_template, request, flash, redirect, session, g
 from sqlalchemy.exc import IntegrityError
-
-from forms import UserAddForm, LoginForm, MessageForm
+from flask_bcrypt import Bcrypt
+from forms import UserAddForm, LoginForm, MessageForm, EditProfileForm
 from models import db, connect_db, User, Message
 
 CURR_USER_KEY = "curr_user"
@@ -14,10 +14,8 @@ app = Flask(__name__)
 # if not set there, use development local db.
 app.config['SQLALCHEMY_DATABASE_URI'] = (
     os.environ.get('DATABASE_URL', 'postgresql:///warbler'))
-
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ECHO'] = False
-# app.config['DEBUG_TB_INTERCEPT_REDIRECTS'] = True
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', "it's a secret")
 app.app_context().push()
 
@@ -74,6 +72,8 @@ def signup():
                 email=form.email.data,
                 image_url=form.image_url.data or User.image_url.default.arg,
             )
+            # YOU (Karl) added the next 1 line. If things go haywire start by looking here. FLAG/ERROR
+            db.session.add(user)
             db.session.commit()
 
         except IntegrityError:
@@ -102,7 +102,7 @@ def login():
             do_login(user)
             flash(f"Hello, {user.username}!", "success")
             return redirect("/")
-
+    
         flash("Invalid credentials.", 'danger')
 
     return render_template('users/login.html', form=form)
@@ -112,7 +112,10 @@ def login():
 def logout():
     """Handle logout of user."""
 
-    # IMPLEMENT THIS
+    session.pop("CURR_USER_KEY", None)
+
+    flash("Successfully Logged Out")
+    return redirect('/login')
 
 
 ##############################################################################
@@ -205,12 +208,35 @@ def stop_following(follow_id):
 
     return redirect(f"/users/{g.user.id}/following")
 
-
+# THIS IS WHERE YOU ARE CURRENTLY - STEP FIVE "PROFILE EDIT"
 @app.route('/users/profile', methods=["GET", "POST"])
-def profile():
+def edit_profile():
     """Update profile for current user."""
 
-    # IMPLEMENT THIS
+    if not g.user:
+        flash("Access unauthorized.", "danger")
+        return redirect("/")
+    
+    user = g.user
+    form = EditProfileForm(obj=user)
+
+    if form.validate_on_submit():
+        if User.authenticate(g.user.username, form.password.data):
+            g.user.username = form.username.data
+            g.user.email = form.email.data
+            g.user.image_url = form.image_url.data or "/static/images/default-pic.png"
+            g.user.header_image_url = form.header_image_url.data or "/static/images/warbler-hero.jpg"
+            g.user.bio = form.bio.data
+
+            db.session.commit()
+            user_id = g.user.id
+            flash("profile updated")
+            return redirect(f'/users/{user_id}')
+        
+        else:
+            flash("Could not verify your password. Please try again.")
+            return redirect('/users/profile')
+    return render_template('users/edit.html', form=form, user_id=user.id)
 
 
 @app.route('/users/delete', methods=["POST"])
@@ -289,10 +315,12 @@ def homepage():
     - anon users: no messages
     - logged in: 100 most recent messages of followed_users
     """
-
+    
     if g.user:
+        id_show_list = [person.id for person in g.user.following] + [g.user.id]
         messages = (Message
                     .query
+                    .filter(Message.user_id.in_(id_show_list))
                     .order_by(Message.timestamp.desc())
                     .limit(100)
                     .all())
